@@ -40,9 +40,41 @@ homicide_data_p2 =
   homicide_data %>%
   unite("city_state", city:state, remove = FALSE, sep = ", ") %>%
   filter(
-    !city_state %in% c("Dallas, TX", "Phoenix, AZ", "Kansas City, MO", "Tulsa, AL",)) %>%
-  filter(victim_race == "White")
-  
+    !city_state %in% c("Dallas, TX", "Phoenix, AZ", "Kansas City, MO", "Tulsa, AL")) %>%
+  filter(victim_race == "White" | victim_race == "Black") %>%
+  mutate(resolved = case_when(
+    startsWith(disposition, "Closed") ~ 1,
+    startsWith(disposition, "Open") ~ 0
+    ),
+    victim_age = as.numeric(victim_age),
+    victim_race = fct_relevel(victim_race, "White"))
+
 ```
 
-check commit
+```{r}
+fit_logistic = 
+  homicide_data_p2 %>% 
+  glm(resolved ~ victim_age + victim_race + victim_sex, data = ., family = binomial()) 
+
+
+```
+
+```{r}
+confidence = 
+  fit_logistic %>% 
+  confint(level = 0.95) %>%
+  as.data.frame()
+
+result = 
+  fit_logistic %>%
+  confint(level = 0.95)
+  broom::tidy() %>% 
+  mutate(OR = exp(estimate)) %>%
+  select(term, OR)
+
+result = 
+  full_join(result, confidence)
+
+  knitr::kable(digits = 3)
+```
+
