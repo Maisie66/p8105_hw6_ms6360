@@ -11,6 +11,11 @@ library(tidyverse)
 library(ggridges)
 library(patchwork)
 library(readxl)
+library(viridis)
+library(rstatix)
+library(PerformanceAnalytics)
+library(modelr)
+
 knitr::opts_chunk$set(
 	echo = TRUE,
 	warning = FALSE,
@@ -29,13 +34,13 @@ scale_fill_discrete = scale_fill_viridis_d
 
 # Problem 2
 
-```{r}
+```{r import_data}
 homicide_data = 
   read_csv("./data/homicide-data.csv") %>%
   janitor::clean_names()
 ```
 
-```{r}
+```{r clean_data}
 homicide_data_p2 = 
   homicide_data %>%
   unite("city_state", city:state, remove = FALSE, sep = ", ") %>%
@@ -51,30 +56,183 @@ homicide_data_p2 =
 
 ```
 
-```{r}
-fit_logistic = 
+```{r logistic_Baltimore}
+fit_logistic_Baltimore = 
   homicide_data_p2 %>% 
-  glm(resolved ~ victim_age + victim_race + victim_sex, data = ., family = binomial()) 
-
+  filter(city_state == "Baltimore, MD") %>%
+  glm(resolved ~ victim_age + victim_race + victim_sex, data = ., family = binomial()) %>%
+  broom::tidy(conf.int = TRUE)
 
 ```
 
-```{r}
-confidence = 
-  fit_logistic %>% 
-  confint(level = 0.95) %>%
-  as.data.frame()
-
-result = 
-  fit_logistic %>%
-  confint(level = 0.95)
-  broom::tidy() %>% 
-  mutate(OR = exp(estimate)) %>%
-  select(term, OR)
-
-result = 
-  full_join(result, confidence)
-
+```{r baltimore_result}
+result_Baltimore = 
+  fit_logistic_Baltimore %>%
+  mutate(
+    OR = exp(estimate),
+    lower95CI = exp(conf.low),
+    upper95CI = exp(conf.high)) %>%
+  select(term, OR, lower95CI, upper95CI) %>%
+  filter(term == "victim_sexMale") %>%
   knitr::kable(digits = 3)
 ```
 
+```{r}
+results_cities = 
+  homicide_data_p2 %>%
+  nest(data = -city_state) %>% 
+  mutate(
+    logistic = map(data, ~glm(resolved ~ victim_age + victim_race + victim_sex, data = ., family = binomial())),
+    results = map(.x = logistic, ~broom::tidy(.x,conf.int = TRUE))) %>% 
+  select(city_state, results) %>% 
+  unnest(results) %>% 
+  mutate(
+OR = exp(estimate),
+    lower95CI = exp(conf.low),
+    upper95CI = exp(conf.high)) %>%
+  select(city_state, term, OR, lower95CI, upper95CI) %>%
+  filter(term == "victim_sexMale")
+
+results_cities %>% 
+  knitr::kable(digits = 3)
+
+```
+
+```{r plot}
+results_cities %>% 
+  mutate(city_state = fct_reorder(city_state, OR)) %>% 
+  ggplot(aes(x = city_state, y = OR)) + 
+  geom_point() + 
+  geom_errorbar(aes(ymin = lower95CI, ymax = upper95CI), width = .8) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  labs(
+    title = "Odds ratio and 95%CI of resolved crime in each city in the US"
+  )
+
+```
+
+## Problem 3
+
+```{r data_import}
+birthweight_data = 
+  read_csv("./data/birthweight.csv") %>%
+  janitor::clean_names()
+```
+
+### Clean data
+
+```{r}
+birthweight_data_clean = 
+  birthweight_data %>%
+  mutate(across(.cols = c(babysex, frace, malform, mrace), as.factor)) %>%
+  mutate(
+      babysex = ifelse(babysex == "1", "male","female"),
+      malform = ifelse(malform == "0", "absent","present"),
+      frace = recode(frace, "1" = "White", "2" = "Black", "3" = "Asian", "4" = "Puerto Rican", "8" = "Other", "9" = "Unknown"),
+      mrace = recode(mrace, "1" = "White", "2" = "Black", "3" = "Asian", "4" = "Puerto Rican", "8" = "Other")
+         )
+```
+
+### Checking for missing data
+```{r, warning = FALSE, message=FALSE}
+birthweight_data_clean[!complete.cases(birthweight_data_clean),]  
+```
+
+* There is no missing data in this dataset. There are `r nrow(birthweight_data_clean)` observations and `r ncol(birthweight_data_clean)` variables in this cleaned dataset. The variables are: `r names(birthweight_data_clean)`.
+
+```{r correlation_matrix}
+birthweight_data %>% 
+  cor_mat() %>%
+  cor_gather() %>%
+  filter(var1 %in% "bwt", !var2 %in% "bwt") %>%
+  mutate(
+    cor_if_sig = ifelse(p < 0.01, cor, NA)
+    ) %>% 
+  ggplot(aes(x = var1, y = var2, fill = cor, label = round(cor_if_sig, 2))) + 
+  geom_tile(color = "white") +   
+  geom_text(color = "white", size = 4) + 
+  labs(
+    x = "Birthweight", 
+    y = "Predictors",
+    title = "Correlations between predictors and birthweight",
+    subtitle = "significant predictors with p-value < 0.01",
+    fill = "Correlation"
+  )
+```
+
+* According to the correlation matrix, variables `wtgain`, `ppwt`, `mrace`, `momage`, `mheight`, `gaweeks`, `frace`, `fincome`, `delwt`, `blength`, and `bhead` should be included in the model. These variables have correlation that is larger than 0.1 whether positive or negative.
+
+```{r linear_model}
+linear_fit = 
+  birthweight_data %>%
+  select(bwt, wtgain, ppwt, mrace, momage, mheight, gaweeks, frace, fincome, delwt, blength, bhead)
+
+model_1 = 
+  lm(bwt ~ blength + bhead + wtgain + ppwt + mrace + momage + mheight + gaweeks + frace + fincome + delwt, data = linear_fit)
+
+```
+
+```{r}
+  linear_fit %>% 
+  modelr::add_residuals(model_1) %>%
+  modelr::add_predictions(model_1) %>%
+  ggplot(aes(x = pred, y = resid)) +
+  geom_point() +
+  labs(
+    x = "Fitted values",
+    y = "Residuals",
+    title = "Model residuals vs fitted values"
+  )
+```
+
+### Comparing models
+
+One using length at birth and gestational age as predictors (main effects only)
+One using head circumference, length, sex, and all interactions (including the three-way interaction) between these
+
+```{r}
+model_2 = lm(bwt ~ blength + gaweeks, data = birthweight_data)
+model_3 = lm(bwt ~ bhead + blength + babysex + bhead * blength + bhead * babysex + blength * babysex + bhead * blength * babysex, data = birthweight_data)
+```
+
+#### Cross validation
+
+```{r}
+cross_validation = 
+  crossv_mc(birthweight_data, 100) %>% 
+  mutate(
+    train = map(train, as_tibble),
+    test = map(test, as_tibble)
+  )
+
+rmse = 
+  cross_validation %>% 
+  mutate(
+   model_1 = map(.x = train, ~lm(bwt ~ blength + bhead + wtgain + ppwt + mrace + momage + mheight + gaweeks + frace + fincome + delwt, data = .x)),
+   model_2 = map(.x = train, ~lm(bwt ~ blength + gaweeks, data = .x)),
+   model_3 = map(.x = train, ~lm(bwt ~ bhead + blength + babysex + bhead * blength + bhead * babysex + blength * babysex + bhead * blength * babysex, data = .x))
+  ) %>% 
+  mutate(
+    rmse_model1 = map2_dbl(.x = model_1, .y = test, ~rmse(model = .x, data = .y)),
+    rmse_model2 = map2_dbl(.x = model_2, .y = test, ~rmse(model = .x, data = .y)),
+    rmse_model3 = map2_dbl(.x = model_3, .y = test, ~rmse(model = .x, data = .y))
+  )
+```
+
+Violon plots
+
+```{r}
+rmse %>% 
+  select(starts_with("rmse")) %>% 
+  pivot_longer(
+    everything(),
+    names_to = "model", 
+    values_to = "rmse",
+    names_prefix = "rmse_") %>% 
+  mutate(model = fct_inorder(model)) %>% 
+  ggplot(aes(x = model, y = rmse)) + geom_violin()
+```
+
+From the RMSE plot, it appears that of the model 1 has the lowest RMSE, which means that it is the best fitted model. With more confounders included, the likelihood of getting a significant result is also more likely.
+
+Model 1 contains variables `wtgain`, `ppwt`, `mrace`, `momage`, `mheight`, `gaweeks`, `frace`, `fincome`, `delwt`, `blength`, and `bhead`. 
