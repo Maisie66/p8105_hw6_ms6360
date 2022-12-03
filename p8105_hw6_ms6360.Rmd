@@ -32,13 +32,61 @@ scale_colour_discrete = scale_colour_viridis_d
 scale_fill_discrete = scale_fill_viridis_d
 ```
 
+# Problem 1
+
+```{r}
+weather_df = 
+  rnoaa::meteo_pull_monitors(
+    c("USW00094728"),
+    var = c("PRCP", "TMIN", "TMAX"), 
+    date_min = "2017-01-01",
+    date_max = "2017-12-31") %>%
+  mutate(
+    name = recode(id, USW00094728 = "CentralPark_NY"),
+    tmin = tmin / 10,
+    tmax = tmax / 10) %>%
+  select(name, id, everything())
+```
+
+```{r}
+weather_df %>% 
+  modelr::bootstrap(n = 1000) %>% 
+  mutate(
+    models = map(strap, ~lm(tmax ~ tmin, data = .x) ),
+    results = map(models, broom::glance)) %>% 
+  select(-strap, -models) %>% 
+  unnest(results) %>% 
+  ggplot(aes(x = r.squared)) + geom_density()
+```
+
+```{r}
+weather_df %>% 
+  modelr::bootstrap(n = 1000) %>% 
+  mutate(
+    models = map(strap, ~lm(tmax ~ tmin, data = .x) ),
+    results = map(models, broom::tidy)) %>% 
+  select(-strap, -models) %>% 
+  unnest(results) %>% 
+  select(id = `.id`, term, estimate) %>% 
+  pivot_wider(
+    names_from = term, 
+    values_from = estimate) %>% 
+  rename(beta0 = `(Intercept)`, beta1 = tmin) %>% 
+  mutate(log_b0b1 = log(beta0 * beta1)) %>% 
+  ggplot(aes(x = log_b0b1)) + geom_density()
+```
+
 # Problem 2
+
+1. Import data
 
 ```{r import_data}
 homicide_data = 
   read_csv("./data/homicide-data.csv") %>%
   janitor::clean_names()
 ```
+
+2. Clean data
 
 ```{r clean_data}
 homicide_data_p2 = 
@@ -47,14 +95,14 @@ homicide_data_p2 =
   filter(
     !city_state %in% c("Dallas, TX", "Phoenix, AZ", "Kansas City, MO", "Tulsa, AL")) %>%
   filter(victim_race == "White" | victim_race == "Black") %>%
-  mutate(resolved = case_when(
-    startsWith(disposition, "Closed") ~ 1,
-    startsWith(disposition, "Open") ~ 0
-    ),
+  mutate(resolved = as.numeric(disposition == "Closed by arrest"),
     victim_age = as.numeric(victim_age),
-    victim_race = fct_relevel(victim_race, "White"))
-
+    victim_race = fct_relevel(victim_race, "White")) %>%
+  select(city_state, resolved, victim_age, victim_sex, victim_race) %>%
+  drop_na()
 ```
+
+* There are `r nrow(homicide_data_p2)` observations and `r ncol(homicide_data_p2)` variables in this cleaned dataset. The variables are: `r names(homicide_data_p2)`.
 
 ```{r logistic_Baltimore}
 fit_logistic_Baltimore = 
@@ -62,8 +110,9 @@ fit_logistic_Baltimore =
   filter(city_state == "Baltimore, MD") %>%
   glm(resolved ~ victim_age + victim_race + victim_sex, data = ., family = binomial()) %>%
   broom::tidy(conf.int = TRUE)
-
 ```
+
+3. Fit logistic regression for Baltimore, MD, for resolved vs unresolved cases comparing male victims to female victims
 
 ```{r baltimore_result}
 result_Baltimore = 
@@ -73,9 +122,15 @@ result_Baltimore =
     lower95CI = exp(conf.low),
     upper95CI = exp(conf.high)) %>%
   select(term, OR, lower95CI, upper95CI) %>%
-  filter(term == "victim_sexMale") %>%
+  filter(term == "victim_sexMale")
+
+result_Baltimore %>%
   knitr::kable(digits = 3)
 ```
+
+* The estimated odds ratio of resolved homicides comparing male victims to female victims is `r result_Baltimore[,"OR"]`, the 95% confidence interval is (`r result_Baltimore[,"lower95CI"]`, `r result_Baltimore[,"upper95CI"]`). 
+
+4. Fit logistic regression for all cities for resolved vs unresolved cases comparing male victims to female victims
 
 ```{r}
 results_cities = 
@@ -98,6 +153,8 @@ results_cities %>%
 
 ```
 
+5. Plot showing the estimated ORs and CIs for each city. 
+
 ```{r plot}
 results_cities %>% 
   mutate(city_state = fct_reorder(city_state, OR)) %>% 
@@ -111,7 +168,11 @@ results_cities %>%
 
 ```
 
+Resolved homicides OR comparing male and female victims is lowest in New York and highest in Albuquerque. Albuquerque also has the largest 95%CI, which means there is large amount of variation within the data for Albuquerque.
+
 ## Problem 3
+
+1. Import data
 
 ```{r data_import}
 birthweight_data = 
@@ -119,26 +180,28 @@ birthweight_data =
   janitor::clean_names()
 ```
 
-### Clean data
+2. Clean data
 
 ```{r}
 birthweight_data_clean = 
   birthweight_data %>%
   mutate(across(.cols = c(babysex, frace, malform, mrace), as.factor)) %>%
   mutate(
-      babysex = ifelse(babysex == "1", "male","female"),
-      malform = ifelse(malform == "0", "absent","present"),
-      frace = recode(frace, "1" = "White", "2" = "Black", "3" = "Asian", "4" = "Puerto Rican", "8" = "Other", "9" = "Unknown"),
-      mrace = recode(mrace, "1" = "White", "2" = "Black", "3" = "Asian", "4" = "Puerto Rican", "8" = "Other")
-         )
+      babysex = as.factor(babysex),
+      malform = as.factor(malform),
+      frace = as.factor(frace),
+      mrace = as.factor(mrace))
 ```
 
-### Checking for missing data
+3. Checking for missing data
+
 ```{r, warning = FALSE, message=FALSE}
 birthweight_data_clean[!complete.cases(birthweight_data_clean),]  
 ```
 
 * There is no missing data in this dataset. There are `r nrow(birthweight_data_clean)` observations and `r ncol(birthweight_data_clean)` variables in this cleaned dataset. The variables are: `r names(birthweight_data_clean)`.
+
+4. Output a correlation matrix to see which variables are associated with birthweight
 
 ```{r correlation_matrix}
 birthweight_data %>% 
@@ -162,6 +225,8 @@ birthweight_data %>%
 
 * According to the correlation matrix, variables `wtgain`, `ppwt`, `mrace`, `momage`, `mheight`, `gaweeks`, `frace`, `fincome`, `delwt`, `blength`, and `bhead` should be included in the model. These variables have correlation that is larger than 0.1 whether positive or negative.
 
+5. Fit a linear model based on variables associated with birthweight
+
 ```{r linear_model}
 linear_fit = 
   birthweight_data %>%
@@ -171,6 +236,8 @@ model_1 =
   lm(bwt ~ blength + bhead + wtgain + ppwt + mrace + momage + mheight + gaweeks + frace + fincome + delwt, data = linear_fit)
 
 ```
+
+6. Plotting fitted values and residuals
 
 ```{r}
   linear_fit %>% 
@@ -185,17 +252,14 @@ model_1 =
   )
 ```
 
-### Comparing models
-
-One using length at birth and gestational age as predictors (main effects only)
-One using head circumference, length, sex, and all interactions (including the three-way interaction) between these
+7. Comparing models
 
 ```{r}
 model_2 = lm(bwt ~ blength + gaweeks, data = birthweight_data)
 model_3 = lm(bwt ~ bhead + blength + babysex + bhead * blength + bhead * babysex + blength * babysex + bhead * blength * babysex, data = birthweight_data)
 ```
 
-#### Cross validation
+8. Cross validation
 
 ```{r}
 cross_validation = 
@@ -219,7 +283,7 @@ rmse =
   )
 ```
 
-Violon plots
+9. Violon plots comparing RMSE for the three models.
 
 ```{r}
 rmse %>% 
@@ -233,6 +297,6 @@ rmse %>%
   ggplot(aes(x = model, y = rmse)) + geom_violin()
 ```
 
-From the RMSE plot, it appears that of the model 1 has the lowest RMSE, which means that it is the best fitted model. With more confounders included, the likelihood of getting a significant result is also more likely.
+From the RMSE plot, it appears that of the model 1 has the lowest RMSE out of the 3 models, which means that it is the best fitted model. With more confounders included, the likelihood of getting a significant result is also more likely. However, RMSE from all models are high, therefore, there should be better models to represent the data other than these 3 models.
 
 Model 1 contains variables `wtgain`, `ppwt`, `mrace`, `momage`, `mheight`, `gaweeks`, `frace`, `fincome`, `delwt`, `blength`, and `bhead`. 
